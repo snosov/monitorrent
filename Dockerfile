@@ -1,4 +1,6 @@
-FROM debian:buster-slim AS download
+# buster is EOL and no longer served from deb.debian.org; this stage only
+# fetches two arch-independent .deb files, so the distro here is incidental
+FROM debian:bookworm-slim AS download
 
 RUN apt update && apt install -y wget
 WORKDIR /deb
@@ -8,7 +10,9 @@ RUN wget -O /deb/fonts-ubuntu_0.83-2_all.deb           http://mirrors.kernel.org
 FROM node:10.24.1-buster-slim AS build
 RUN npm install -g gulp@3.9.0
 WORKDIR /app
-COPY ./package*.json /app
+# trailing slash required: the glob matches two files, and the classic
+# (non-BuildKit) builder rejects a multi-source COPY without it
+COPY ./package*.json /app/
 RUN npm install
 COPY . /app
 RUN gulp release
@@ -45,7 +49,9 @@ WORKDIR /var/www/monitorrent
 EXPOSE 6687
 
 # Healthcheck
+# -L is required: / redirects to /login when there is no session, so without
+# following it this reports 302 and the container is permanently unhealthy
 HEALTHCHECK --interval=1m --timeout=5s --retries=3 --start-period=30s \
-  CMD curl -sS -o /dev/null -w "%{http_code}" http://localhost:6687 | grep -q 200 || exit 1
+  CMD curl -sSL -o /dev/null -w "%{http_code}" http://localhost:6687 | grep -q 200 || exit 1
 
 CMD ["python", "server.py"]
