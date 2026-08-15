@@ -28,6 +28,24 @@ class NnmClubCredentials(Base):
     sid = Column(String, nullable=True)
 
 
+def parse_user_id(value):
+    """Accept a bare user id or the raw phpbb2mysql_4_data cookie.
+
+    Copying the two cookies straight out of the browser is easier than
+    digging the numeric id out of the serialized one, so take either.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    if not value or value.isdigit():
+        return value or None
+    try:
+        parsed = loads(unquote(value).encode('utf-8'))
+        return parsed[u'userid'.encode('utf-8')].decode('utf-8')
+    except Exception:
+        return value
+
+
 class NnmClubTopic(Topic):
     __tablename__ = "nnmclub_topics"
 
@@ -141,6 +159,42 @@ class NnmClubPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
     tracker = NnmClubTracker()
     topic_class = NnmClubTopic
     credentials_class = NnmClubCredentials
+    # without these whitelists the two cookie fields below are dropped by the API
+    credentials_public_fields = ['username', 'sid', 'user_id']
+    credentials_private_fields = ['username', 'password', 'sid', 'user_id']
+    # nnmclub puts a JavaScript CAPTCHA on its login form, so the form cannot be
+    # submitted from here at all. A session copied out of a logged in browser is
+    # the way in, same escape hatch lostfilm and rutracker use.
+    credentials_form = [{
+        'type': 'row',
+        'content': [{
+            'type': 'text',
+            'model': 'username',
+            'label': 'Username',
+            'flex': 50
+        }, {
+            'type': 'password',
+            'model': 'password',
+            'label': 'Password',
+            'flex': 50
+        }]
+    }, {
+        'type': 'row',
+        'content': [{
+            'type': 'text',
+            'model': 'sid',
+            'label': 'phpbb2mysql_4_sid cookie (DevTools → Storage → Cookies)',
+            'flex': 100
+        }]
+    }, {
+        'type': 'row',
+        'content': [{
+            'type': 'text',
+            'model': 'user_id',
+            'label': 'phpbb2mysql_4_data cookie, or just your numeric user id',
+            'flex': 100
+        }]
+    }]
     topic_form = [{
         'type': 'row',
         'content': [{
@@ -158,8 +212,24 @@ class NnmClubPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
                 return LoginResult.CredentialsNotSpecified
             username = cred.username
             password = cred.password
-            if not username or not password:
+            sid = cred.sid
+            user_id = parse_user_id(cred.user_id)
+
+        # a pasted session wins: the login form itself is behind a CAPTCHA that
+        # cannot be answered from here, so posting to it can only ever fail
+        if sid:
+            if not user_id:
                 return LoginResult.CredentialsNotSpecified
+            self.tracker.setup(user_id, sid)
+            if self.tracker.verify():
+                with DBSession() as db:
+                    cred = db.query(self.credentials_class).first()
+                    cred.user_id = user_id
+                return LoginResult.Ok
+            return LoginResult.IncorrentLoginPassword
+
+        if not username or not password:
+            return LoginResult.CredentialsNotSpecified
         try:
             self.tracker.login(username, password)
             with DBSession() as db:
@@ -180,11 +250,12 @@ class NnmClubPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
             cred = db.query(self.credentials_class).first()
             if not cred:
                 return False
-            username = cred.username
-            password = cred.password
-            if not username or not password or not cred.user_id or not cred.sid:
+            # username/password are not required: with a pasted session they
+            # are never used, and demanding them made verify fail outright
+            user_id = parse_user_id(cred.user_id)
+            if not user_id or not cred.sid:
                 return False
-            self.tracker.setup(cred.user_id, cred.sid)
+            self.tracker.setup(user_id, cred.sid)
         return self.tracker.verify()
 
     def can_parse_url(self, url):
