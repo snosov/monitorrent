@@ -412,13 +412,30 @@ def extract_cloudflare_credentials_and_headers(url: str, headers: dict, cookies:
 
     try:
         resp = scrapper.get(url=url, headers=headers, cookies=cookies)
-        if 'Cloudflare' in resp.text:
+        if is_cloudflare_challenge(resp):
             raise CloudflareException('Exception should be thrown by scrapper, but this is not always happened')
 
         # If page doesn't have cloudflare, don't send new cookies and headers
         return headers, cookies
     except CloudflareException:
         return asyncio.run(solve_challenge(url, settings))
+
+
+def is_cloudflare_challenge(resp):
+    """Whether this response is an interstitial challenge rather than the page.
+
+    The old check was `'Cloudflare' in resp.text`, which the current managed
+    challenge does not satisfy: it spells the name in lowercase only, so every
+    challenge looked like a clean page and the solver was never invoked.
+    Match on the response metadata first and fall back to case-insensitive
+    body markers.
+    """
+    if resp.headers.get('cf-mitigated') == 'challenge':
+        return True
+    if resp.status_code not in (403, 503):
+        return False
+    body = (resp.text or '').lower()
+    return any(marker in body for marker in ('just a moment', 'challenge-platform', '__cf_chl', 'cloudflare'))
 
 
 async def solve_challenge(url, settings: CloudflareChallengeSolverSettings):
@@ -450,10 +467,14 @@ async def solve_challenge(url, settings: CloudflareChallengeSolverSettings):
 
             await page.goto(url)
 
+            # the last task is the success condition. It used to wait for
+            # '.left-side > .menu', which only exists on lostfilm, so every
+            # other tracker sat out the whole timeout even after the challenge
+            # had cleared. cf_clearance is the tracker-independent signal.
             features = [
                 asyncio.create_task(page.locator('input[type="button"]').click(timeout=settings.timeout)),
                 asyncio.create_task(page.frame_locator("iframe").locator("input").click(timeout=settings.timeout)),
-                asyncio.create_task(page.wait_for_selector('.left-side > .menu', timeout=settings.timeout)),
+                asyncio.create_task(wait_for_clearance(context, url, settings.timeout)),
             ]
 
             done, rest = await asyncio.wait(features, return_when=asyncio.FIRST_COMPLETED)
@@ -471,11 +492,12 @@ async def solve_challenge(url, settings: CloudflareChallengeSolverSettings):
                 except asyncio.CancelledError:
                     pass
 
+            # wait_for_clearance already guarantees the cookie is present, so
+            # this is a plain read. It used to be an unbounded, sleepless spin
+            # that pinned a core forever whenever the challenge was not solved.
             url_parse: Url = urllib3.util.parse_url(url)
-            new_cookies = {}
-            while 'cf_clearance' not in new_cookies:
-                page_cookies = await context.cookies(url_parse.scheme + "://" + url_parse.hostname)
-                new_cookies = {k['name']: k['value'] for k in page_cookies if k['name'] in ['cf_clearance']}
+            page_cookies = await context.cookies(url_parse.scheme + "://" + url_parse.hostname)
+            new_cookies = {k['name']: k['value'] for k in page_cookies if k['name'] == 'cf_clearance'}
 
             return req_headers, new_cookies
         finally:
@@ -485,6 +507,19 @@ async def solve_challenge(url, settings: CloudflareChallengeSolverSettings):
             # keep only settings.keep_records last challenges, delete others
             for challenge_folder in sorted(glob.glob(path.join('webapp', 'challenges', '*')), reverse=True, key=path.getctime)[settings.keep_records:]:
                 shutil.rmtree(challenge_folder)
+
+
+async def wait_for_clearance(context, url, timeout):
+    """Resolve once Cloudflare hands out cf_clearance for this origin."""
+    url_parse: Url = urllib3.util.parse_url(url)
+    origin = url_parse.scheme + "://" + url_parse.hostname
+    deadline, waited, step = timeout / 1000.0, 0.0, 0.5
+    while waited < deadline:
+        if any(c['name'] == 'cf_clearance' for c in await context.cookies(origin)):
+            return True
+        await asyncio.sleep(step)
+        waited += step
+    raise PlaywrightTimeoutError('Cloudflare challenge was not solved within {0}ms'.format(timeout))
 
 
 async def wait_for_iframe_input(page, timeout=120000):

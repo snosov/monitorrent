@@ -30,9 +30,24 @@ class KinozalTrackerUpgradeTest(UpgradeTestCase):
                                 Column('c_uid', String, nullable=True),
                                 Column('c_pass', String, nullable=True))
 
+    m2 = MetaData()
+    KinozalTopic2 = Table("kinozal_topics", m2,
+                          Column("id", Integer, ForeignKey('topics.id'), primary_key=True),
+                          Column("hash", String, nullable=True),
+                          Column("last_torrent_update", UTCDateTime, nullable=True))
+
+    # version 2 adds the mirror domain to the credentials
+    KinozalCredentials2 = Table("kinozal_credentials", m2,
+                                Column('username', String, primary_key=True),
+                                Column('password', String, primary_key=True),
+                                Column('c_uid', String, nullable=True),
+                                Column('c_pass', String, nullable=True),
+                                Column('domain', String, nullable=True, server_default='kinozal.tv'))
+
     versions = [
         (KinozalTopic0, UpgradeTestCase.copy(Topic.__table__, m0), KinozalCredentials0),
         (KinozalTopic1, UpgradeTestCase.copy(Topic.__table__, m1), KinozalCredentials1),
+        (KinozalTopic2, UpgradeTestCase.copy(Topic.__table__, m2), KinozalCredentials2),
     ]
 
     def upgrade_func(self, engine, operation_factory):

@@ -107,7 +107,7 @@ class TestKinozalTracker(object):
 
     def test_get_download_url(self):
         for url in self.urls_to_check:
-            assert self.tracker.get_download_url(url) == "https://dl.kinozal.tv/download.php?id=1506818"
+            assert self.tracker.get_download_url(url) == "https://kinozal.tv/download.php?id=1506818"
 
     def test_get_download_url_error(self):
         assert not self.tracker.get_download_url("https://not.kinozal.com/details.php?id=1506818")

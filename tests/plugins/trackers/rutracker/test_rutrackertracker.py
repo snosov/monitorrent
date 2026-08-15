@@ -65,8 +65,12 @@ class RutrackerTrackerTest(TestCase):
         self.assertEqual(e.exception.code, 1)
         self.assertEqual(e.exception.message, 'Invalid login or password')
 
+    # the cloudflare probe uses its own cloudscraper session, so mocking
+    # Session.post alone still let this test reach the live site
+    @patch('monitorrent.plugins.trackers.rutracker.update_headers_and_cookies_mixin',
+           return_value=(None, None))
     @patch('monitorrent.plugins.trackers.rutracker.Session.post')
-    def test_login_failed_cookie(self, post):
+    def test_login_failed_cookie(self, post, cf_mixin):
         login_result = Mock()
         login_result.url = 'http://rutracker.org/forum/index.php'
         post.return_value = login_result

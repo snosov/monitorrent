@@ -96,7 +96,7 @@ class KinozalPluginTest(DbTestCase):
             request = self.plugin._prepare_request(KinozalTopic(url=url))
             self.assertIsNotNone(request)
             self.assertEqual(request.headers['referer'], url)
-            self.assertEqual(request.url, 'https://dl.kinozal.tv/download.php?id=1506818')
+            self.assertEqual(request.url, 'https://kinozal.tv/download.php?id=1506818')
 
     @use_vcr
     def test_get_last_torrent_update_for_updated_yesterday_success(self):

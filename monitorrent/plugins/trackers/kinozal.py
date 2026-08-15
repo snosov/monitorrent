@@ -129,12 +129,21 @@ class KinozalLoginFailedException(Exception):
         self.message = message
 
 
+KNOWN_DOMAINS = ('kinozal.tv', 'kinozal.guru', 'kinozal.me')
+
+
+def _build_url_regex(domains):
+    hosts = u'|'.join(re.escape(d) for d in domains)
+    return re.compile(six.text_type(r'^https?://(?:www\.)?(?:' + hosts + r')/details\.php\?id=(\d+)$'))
+
+
 class KinozalTracker(object):
     tracker_settings = None
     date_parser = KinozalDateParser()
-    
-    # Регулярка теперь принимает ЛЮБОЙ домен, содержащий kinozal
-    url_regex = re.compile(six.text_type(r'^https?://[^/]*kinozal[^/]*/details\.php\?id=(\d+)$'))
+
+    # an allow list, not a substring match: matching anything containing
+    # "kinozal" would claim look-alike hosts such as kinozal.com
+    url_regex = _build_url_regex(KNOWN_DOMAINS)
 
     def __init__(self, c_uid=None, c_pass=None, domain='kinozal.tv'):
         self.c_uid = c_uid
@@ -154,19 +163,31 @@ class KinozalTracker(object):
     def profile_page(self):
         return "https://{}/inbox.php".format(self.domain)
 
+    def _match(self, url):
+        match = self.url_regex.match(url)
+        if match is not None:
+            return match
+        # honour a mirror the user configured that is not in KNOWN_DOMAINS
+        if self.domain and self.domain not in KNOWN_DOMAINS:
+            return _build_url_regex((self.domain,)).match(url)
+        return None
+
     def can_parse_url(self, url):
-        return self.url_regex.match(url) is not None
+        return self._match(url) is not None
 
     def parse_url(self, url):
-        match = self.url_regex.match(url)
+        match = self._match(url)
         if match is None:
             return None
         torrent_id = match.group(1)
 
         real_url = "https://{}/details.php?id={}".format(self.domain, torrent_id)
         
+        # the mirrors bounce anonymous requests to /login.php, so the session
+        # cookies have to travel with this request, not just with the download
         try:
-            r = requests.get(real_url, allow_redirects=False, **self.tracker_settings.get_requests_kwargs())
+            r = requests.get(real_url, allow_redirects=False, cookies=self.get_cookies() or None,
+                             **self.tracker_settings.get_requests_kwargs())
             r.raise_for_status()
         except requests.exceptions.RequestException:
             return None
@@ -218,7 +239,7 @@ class KinozalTracker(object):
         return {'pass': self.c_pass, 'uid': self.c_uid}
 
     def get_id(self, url):
-        match = self.url_regex.match(url)
+        match = self._match(url)
         if match is None:
             return None
         return match.group(1)
@@ -231,7 +252,8 @@ class KinozalTracker(object):
         real_url = "https://{}/details.php?id={}".format(self.domain, torrent_id)
         
         try:
-            response = requests.get(real_url, **self.tracker_settings.get_requests_kwargs())
+            response = requests.get(real_url, cookies=self.get_cookies() or None,
+                                    **self.tracker_settings.get_requests_kwargs())
             response.raise_for_status()
         except requests.exceptions.RequestException:
             return None
@@ -308,12 +330,19 @@ class KinozalPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
         }]
     }]
 
-    def _get_domain(self):
+    def _setup_tracker(self):
+        """Restore the saved domain and session cookies onto the shared tracker.
+
+        parse_url and check_changes can run long before login/verify has
+        populated it in this process, and the mirrors serve nothing useful
+        anonymously, so both have to be restored before any request.
+        """
         with DBSession() as db:
             cred = db.query(self.credentials_class).first()
-            if cred and cred.domain:
-                return cred.domain
-        return 'kinozal.tv'
+            if cred is None:
+                self.tracker.setup(None, None, 'kinozal.tv')
+                return
+            self.tracker.setup(cred.c_uid, cred.c_pass, cred.domain or 'kinozal.tv')
 
     def login(self):
         with DBSession() as db:
@@ -358,11 +387,11 @@ class KinozalPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
         return self.tracker.can_parse_url(url)
 
     def parse_url(self, url):
-        self.tracker.domain = self._get_domain()
+        self._setup_tracker()
         return self.tracker.parse_url(url)
 
     def check_changes(self, topic):
-        self.tracker.domain = self._get_domain()
+        self._setup_tracker()
         last_torrent_update = self.tracker.get_last_torrent_update(topic.url)
         topic_last_torrent_update = topic.last_torrent_update
         min_date = pytz.utc.localize(datetime.datetime.min)
@@ -374,7 +403,7 @@ class KinozalPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
         return False
 
     def _prepare_request(self, topic):
-        self.tracker.domain = self._get_domain()
+        self._setup_tracker()
         headers = {'referer': topic.url}
         cookies = self.tracker.get_cookies()
         request = requests.Request('GET', self.tracker.get_download_url(topic.url), headers=headers, cookies=cookies)
