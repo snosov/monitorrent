@@ -122,7 +122,14 @@ class RutrackerTracker(object):
         if match is None:
             return None
 
-        r = requests.get(url, allow_redirects=False, **self.tracker_settings.get_requests_kwargs())
+        # a bare request is answered with a cloudflare challenge page, which has
+        # no <h1> and so is indistinguishable here from "topic not found".
+        # get_cookies carries the login session too, and falls back to the
+        # cloudflare cookies alone when there is no session yet
+        r = requests.get(url, allow_redirects=False,
+                         headers=self.headers or None,
+                         cookies=self.get_cookies() or self.cookies or None,
+                         **self.tracker_settings.get_requests_kwargs())
 
         soup = get_soup(r.text)
         if soup.h1 is None:
@@ -305,7 +312,24 @@ class RutrackerPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerP
     def can_parse_url(self, url):
         return self.tracker.can_parse_url(url)
 
+    def _setup_tracker(self):
+        """Restore session and cloudflare credentials onto the shared tracker.
+
+        parse_url runs in processes where login/verify never did, so without
+        this the tracker goes out bare: no session, no cf_clearance, no
+        User-Agent.
+        """
+        with DBSession() as db:
+            cred = db.query(self.credentials_class).first()
+            if cred is None:
+                self.tracker.setup(None, None)
+                return
+            self.tracker.setup(cred.uid, cred.bb_data,
+                               headers=parse_headers_field(cred.headers),
+                               cookies=parse_cookies_field(cred.cookies))
+
     def parse_url(self, url):
+        self._setup_tracker()
         return self.tracker.parse_url(url)
 
     def _prepare_request(self, topic):
