@@ -123,6 +123,16 @@ class KinozalDateParser(object):
         return self.tz_moscow.localize(parsed_date_time)
 
 
+# kinozal clears its auth cookies by setting them to the literal string
+# "deleted". That value is truthy, so a rejected login used to read as a
+# success and the plugin stored a dead session.
+DELETED_COOKIE = 'deleted'
+
+
+def is_valid_cookie(value):
+    return bool(value) and value != DELETED_COOKIE
+
+
 class KinozalLoginFailedException(Exception):
     def __init__(self, code, message):
         self.code = code
@@ -163,6 +173,18 @@ class KinozalTracker(object):
     def profile_page(self):
         return "https://{}/inbox.php".format(self.domain)
 
+    @staticmethod
+    def _apply_encoding(response):
+        """kinozal serves windows-1251 and does not always declare it.
+
+        requests falls back to latin-1 for an undeclared text/* body, which
+        turns every Cyrillic title into mojibake. Only override when the
+        server stayed silent, so a mirror that does declare its charset still
+        wins.
+        """
+        if 'charset' not in (response.headers.get('content-type') or '').lower():
+            response.encoding = 'windows-1251'
+
     def _match(self, url):
         match = self.url_regex.match(url)
         if match is not None:
@@ -192,6 +214,7 @@ class KinozalTracker(object):
         except requests.exceptions.RequestException:
             return None
 
+        self._apply_encoding(r)
         soup = get_soup(r.text)
         if soup.h1 is None:
             return None
@@ -213,28 +236,32 @@ class KinozalTracker(object):
         else:
             c_pass = s.cookies.get('pass')
             c_uid = s.cookies.get('uid')
-            if not c_pass or not c_uid:
+            if not is_valid_cookie(c_pass) or not is_valid_cookie(c_uid):
                 raise KinozalLoginFailedException(2, "Failed to retrieve cookie")
 
             self.c_pass = c_pass
             self.c_uid = c_uid
 
     def verify(self):
-        if not self.c_uid:
-            return False
         cookies = self.get_cookies()
         if not cookies:
             return False
-            
+
         try:
             profile_page_result = requests.get(self.profile_page, cookies=cookies,
                                                **self.tracker_settings.get_requests_kwargs())
-            return profile_page_result.url == self.profile_page
         except requests.exceptions.RequestException:
             return False
 
+        # the url alone is not proof of a session: a signed out request can be
+        # served the same url carrying a login form. Look for something only a
+        # signed in page has.
+        self._apply_encoding(profile_page_result)
+        body = profile_page_result.text
+        return (u'userdetails.php?id=' + six.text_type(self.c_uid)) in body or u'Выход' in body
+
     def get_cookies(self):
-        if not self.c_pass or not self.c_uid:
+        if not is_valid_cookie(self.c_pass) or not is_valid_cookie(self.c_uid):
             return False
         return {'pass': self.c_pass, 'uid': self.c_uid}
 
@@ -258,6 +285,7 @@ class KinozalTracker(object):
         except requests.exceptions.RequestException:
             return None
 
+        self._apply_encoding(response)
         soup = get_soup(response.text)
         content = soup.find("div", {"class": "mn1_menu"})
         if content is None:
