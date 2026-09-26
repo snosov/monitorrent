@@ -30,6 +30,12 @@
                             Edit
                         </md-button>
                     </md-menu-item>
+                    <md-menu-item>
+                        <md-button ng-click="duplicateTorrent($event, torrent)" aria-label="Duplicate">
+                            <md-icon md-svg-icon="content/icons/content-copy.svg"></md-icon>
+                            Duplicate
+                        </md-button>
+                    </md-menu-item>
                     <md-menu-item ng-if="!torrent.paused">
                         <md-button ng-click="pauseState(torrent.id, true)" aria-label="Reset Status">
                             <md-icon md-svg-icon="content/icons/pause.svg"></md-icon>
