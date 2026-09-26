@@ -177,7 +177,7 @@ class TrackersManagerTest(TestCase):
         self.assertTrue(self.trackers_manager.add_topic(url, params))
 
         can_parse_url_mock1.assert_called_with(url)
-        add_topic_mock1.assert_called_with(url, params)
+        add_topic_mock1.assert_called_with(url, params, validate=True)
 
     def test_add_topic_2(self):
         can_parse_url_mock1 = MagicMock(return_value=False)
@@ -198,7 +198,7 @@ class TrackersManagerTest(TestCase):
         add_topic_mock1.assert_not_called()
 
         can_parse_url_mock2.assert_called_with(url)
-        add_topic_mock2.assert_called_with(url, params)
+        add_topic_mock2.assert_called_with(url, params, validate=True)
 
     def test_add_topic_3(self):
         can_parse_url_mock1 = MagicMock(return_value=False)

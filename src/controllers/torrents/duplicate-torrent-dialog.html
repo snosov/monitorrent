@@ -1,4 +1,4 @@
-<md-dialog class="mt-add-torrent" aria-label="Duplicate Torrent">
+<md-dialog class="mt-edit-torrent" style="width: 500px;" aria-label="Duplicate Torrent">
     <md-toolbar>
         <div class="md-toolbar-tools">
             <h2>Duplicate Torrent</h2>
@@ -8,13 +8,12 @@
         <div layout="row">
             <md-input-container flex>
                 <label>URL</label>
-                <input type="url" ng-change="parseUrl()" ng-model="url" ng-model-options="{ debounce: 500 }">
-                <div ng-if="!isValid && !isLoading && url">
-                    <div class="md-input-message-animation">Can't parse this url</div>
+                <input type="url" ng-model="url">
+                <div ng-if="error">
+                    <div class="md-input-message-animation">{{error}}</div>
                 </div>
             </md-input-container>
         </div>
-        <md-progress-linear md-mode="indeterminate" ng-show="isLoading"></md-progress-linear>
         <mt-dynamic-form data="form" model="settings"></mt-dynamic-form>
         <div layout="row" ng-if="has_download_dir != null">
             <md-input-container flex>
@@ -30,7 +29,7 @@
         <md-button ng-click="cancel()">
             Cancel
         </md-button>
-        <md-button ng-click="add()" class="md-primary" ng-disabled="!isValid || isLoading">
+        <md-button ng-click="add()" class="md-primary" ng-disabled="!url || isSaving">
             Add
         </md-button>
     </md-dialog-actions>

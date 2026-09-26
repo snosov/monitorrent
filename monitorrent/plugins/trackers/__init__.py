@@ -115,16 +115,22 @@ class TrackerPluginBase(with_metaclass(abc.ABCMeta, object)):
         }
         return settings
 
-    def add_topic(self, url, params):
+    def add_topic(self, url, params, validate=True):
         """
         :type url: str
         :type params: dict
+        :param validate: fetch the url and derive defaults from it. Duplicating
+            an existing topic passes False: the values are copied from the
+            record the user is duplicating, so there is nothing to derive, and
+            a tracker that is temporarily unreachable should not block a copy.
         :rtype: bool
         """
-        parsed_url = self.parse_url(url)
-        if parsed_url is None:
-            # TODO: Throw exception, because we shouldn't call add topic if we can't parse URL
-            return False
+        parsed_url = None
+        if validate:
+            parsed_url = self.parse_url(url)
+            if parsed_url is None:
+                # TODO: Throw exception, because we shouldn't call add topic if we can't parse URL
+                return False
         with DBSession() as db:
             topic = self.topic_class(url=url)
             self._set_topic_params(url, parsed_url, topic, params)
@@ -178,6 +184,14 @@ class TrackerPluginBase(with_metaclass(abc.ABCMeta, object)):
             topic = db.query(self.topic_class).filter(Topic.id == id).first()
             if topic is None:
                 return False
+            new_url = params.get('url')
+            # the row carries this tracker's polymorphic identity, so the url
+            # may only move within the same tracker: pointing it at another one
+            # would leave the row unreadable by both. A url this plugin cannot
+            # parse is left alone rather than failing the whole update, which
+            # is what the rest of the edit did before urls were editable.
+            if new_url and new_url != topic.url and self.can_parse_url(new_url):
+                topic.url = new_url
             self._set_topic_params(None, None, topic, params)
         return True
 

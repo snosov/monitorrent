@@ -3,8 +3,14 @@ app.factory('TopicsService', function ($http) {
         all: function () {
             return $http.get("/api/topics");
         },
-        add: function(url, settings) {
-            return $http.post("/api/topics", {url: url, settings: settings});
+        add: function(url, settings, validate) {
+            var body = {url: url, settings: settings};
+            if (validate === false) {
+                // duplicating copies the stored values, so the server has no
+                // need to fetch the page to derive them
+                body.validate = false;
+            }
+            return $http.post("/api/topics", body);
         },
         resetStatus: function(id) {
             return $http.post("/api/topics/" + id + '/reset_status');

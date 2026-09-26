@@ -81,16 +81,14 @@ app.controller('TorrentsController', function ($scope, $rootScope, TopicsService
 	}
 
 	function DuplicateTorrentDialogController($scope, $mdDialog, source) {
-		// the source topic's own settings, overlaid onto the freshly parsed
-		// defaults once. Re-parsing after the user edits the url must not
-		// re-apply them, or a url from another tracker gets the old values.
-		var pendingOverlay = source.settings;
-
-		$scope.isLoading = false;
-		$scope.isValid = false;
-		$scope.url = source.url;
+		// a straight copy of the stored record: no url parsing, so nothing is
+		// fetched and nothing overwrites the values being copied. Every field,
+		// url included, is the user's to change before adding.
+		$scope.url = source.settings.url;
+		$scope.form = source.form;
+		$scope.settings = source.settings;
 		$scope.has_download_dir = null;
-		$scope.settings = {};
+		$scope.isSaving = false;
 
 		$scope.cancel = function () {
 			$mdDialog.cancel();
@@ -100,39 +98,17 @@ app.controller('TorrentsController', function ($scope, $rootScope, TopicsService
 			if ($scope.settings && $scope.settings.download_dir === $scope.client_download_dir) {
 				$scope.settings.download_dir = null;
 			}
-
-			TopicsService.add($scope.url, $scope.settings).then(function () {
+			$scope.isSaving = true;
+			$scope.error = null;
+			// validate:false - the values come from the record, not from the page
+			TopicsService.add($scope.url, $scope.settings, false).then(function () {
 				$mdDialog.hide();
-			});
-		};
-
-		$scope.parseUrl = function () {
-			if (!$scope.url) {
-				$scope.isValid = false;
-				return;
-			}
-			$scope.isLoading = true;
-			TopicsService.parseUrl($scope.url).success(function (data) {
-				$scope.form = data.form;
-				var settings = data.settings || {};
-				if (pendingOverlay) {
-					// carry the original's values over the parsed defaults
-					angular.forEach(pendingOverlay, function (value, key) {
-						if (key !== 'url' && key !== 'id' && value !== null && value !== undefined) {
-							settings[key] = value;
-						}
-					});
-					pendingOverlay = null;
-				} else if ($scope.settings) {
-					settings.download_dir = $scope.settings.download_dir;
-				}
-				$scope.settings = settings;
-				$scope.isValid = true;
-				$scope.isLoading = false;
-			}).error(function () {
-				pendingOverlay = null;
-				$scope.isValid = false;
-				$scope.isLoading = false;
+			}, function (response) {
+				// 409 is the unique url constraint: a copy needs its own url
+				$scope.error = (response && response.status === 409) ?
+					'A topic with this URL already exists - change the URL for the copy' :
+					'Could not add the copy';
+				$scope.isSaving = false;
 			});
 		};
 
@@ -141,20 +117,15 @@ app.controller('TorrentsController', function ($scope, $rootScope, TopicsService
 			var download_dir = data.data.fields.download_dir;
 			$scope.has_download_dir = download_dir !== null && download_dir !== undefined;
 			$scope.client_download_dir = download_dir;
-			if (!$scope.settings) {
-				$scope.settings = {};
-			}
 			$scope.settings.download_dir = $scope.settings.download_dir || download_dir;
 		});
-
-		$scope.parseUrl();
 	}
 
 	$scope.duplicateTorrent = function (ev, torrent) {
-		// the edit endpoint may return a different form than adding does
-		// (topic_edit_form), so take only the saved values from it and let
-		// parse build the add form.
 		TopicsService.getSettings(torrent.id).success(function (data) {
+			var settings = angular.copy(data.settings) || {};
+			delete settings.id;
+			settings.url = settings.url || torrent.url;
 			$mdDialog.show({
 				controller: DuplicateTorrentDialogController,
 				templateUrl: 'controllers/torrents/duplicate-torrent-dialog.html',
@@ -162,8 +133,8 @@ app.controller('TorrentsController', function ($scope, $rootScope, TopicsService
 				targetEvent: ev,
 				locals: {
 					source: {
-						url: (data.settings && data.settings.url) || torrent.url,
-						settings: angular.copy(data.settings) || {}
+						form: data.form,
+						settings: settings
 					}
 				}
 			}).then(function () {

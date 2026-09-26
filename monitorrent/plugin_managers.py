@@ -114,13 +114,13 @@ class TrackersManager(object):
                 return {'form': tracker.topic_form, 'settings': parsed_url}
         return None
 
-    def add_topic(self, url, params):
+    def add_topic(self, url, params, validate=True):
         tracker_settings = self.settings_manager.tracker_settings
         for name, tracker in list(self.trackers.items()):
             tracker.init(tracker_settings)
             if not tracker.can_parse_url(url):
                 continue
-            if tracker.add_topic(url, params):
+            if tracker.add_topic(url, params, validate=validate):
                 return True
         return False
 

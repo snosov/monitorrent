@@ -2,6 +2,7 @@ from builtins import str
 from builtins import object
 import falcon
 import six
+from sqlalchemy.exc import IntegrityError
 from monitorrent.plugin_managers import TrackersManager
 
 
@@ -21,9 +22,17 @@ class TopicCollection(object):
         try:
             url = body['url']
             settings = body['settings']
-            added = self.tracker_manager.add_topic(url, settings)
+            # duplicating a topic copies the stored values instead of deriving
+            # them from the page, so the url does not need fetching
+            validate = body.get('validate', True)
+            added = self.tracker_manager.add_topic(url, settings, validate=validate)
         except KeyError:
             raise falcon.HTTPBadRequest('WrongParameters', 'Can\'t add topic')
+        except IntegrityError:
+            # topics.url is unique, which duplicating a topic will hit unless
+            # the url was changed. Say so instead of a bare 500.
+            raise falcon.HTTPConflict('AlreadyExists',
+                                      'A topic with url \'{}\' already exists'.format(url))
         if not added:
             raise falcon.HTTPInternalServerError('ServerError', 'Can\'t add topic')
         resp.status = falcon.HTTP_201
