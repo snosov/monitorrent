@@ -313,8 +313,11 @@ class KinozalTracker(object):
             response = self._request('GET', real_url, cookies=self.get_cookies() or None,
                                      **self.tracker_settings.get_requests_kwargs())
             response.raise_for_status()
-        except HTTP_ERRORS + (CloudflareSolverError,):
+        except HTTP_ERRORS:
             return None
+        # CloudflareSolverError is left to propagate: returning None here makes
+        # check_changes report "no changes", so a tracker that could not be
+        # reached at all looked like one that simply had nothing new
 
         self._apply_encoding(response)
         soup = get_soup(response.text)

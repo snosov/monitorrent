@@ -19,6 +19,7 @@ Nothing changes unless MONITORRENT_FLARESOLVERR_URL is set.
 import math
 import os
 import threading
+import time
 
 import requests
 import structlog
@@ -40,6 +41,11 @@ log = structlog.get_logger()
 
 FLARESOLVERR_URL_ENV = 'MONITORRENT_FLARESOLVERR_URL'
 FLARESOLVERR_TIMEOUT_ENV = 'MONITORRENT_FLARESOLVERR_TIMEOUT'
+
+# after a failed solve, requests to that host fail at once for this long rather
+# than each spending a full solver timeout: one execute run over nine topics
+# took ten minutes that way
+SOLVE_FAILURE_BACKOFF = 300
 
 # callers that used to catch requests' errors need curl_cffi's as well: they
 # are not subclasses of requests.exceptions.RequestException
@@ -97,6 +103,7 @@ class CloudflareSolverSession(object):
         self.impersonate = impersonate
         self.max_timeout = max_timeout
         self._clearance = {}
+        self._failed_at = {}
         self._lock = threading.Lock()
 
     def new_session(self):
@@ -118,25 +125,44 @@ class CloudflareSolverSession(object):
         return self._send(method, url, host, cookies, headers, session, **kwargs)
 
     def solve(self, url, cookies=None):
+        """Put url through FlareSolverr and cache the clearance for its host.
+
+        :param cookies: accepted for callers' convenience and deliberately not
+            forwarded. Only cf_clearance and the User-Agent are taken from the
+            solver; the real request is then made with the session cookies. So
+            it does not matter that the solver's browser, signed out, lands on
+            a login page - and handing it the session cookies made the
+            challenge time out from some addresses while plain solves passed
+            in 13 seconds.
+        """
         host = urlparse(url).hostname
         with self._lock:
+            failed_at = self._failed_at.get(host)
+            if failed_at is not None and time.time() - failed_at < SOLVE_FAILURE_BACKOFF:
+                raise CloudflareSolverError(
+                    u"FlareSolverr failed to solve {0} {1:.0f}s ago; not retrying for another {2:.0f}s".format(
+                        host, time.time() - failed_at, SOLVE_FAILURE_BACKOFF - (time.time() - failed_at)))
             payload = {'cmd': 'request.get', 'url': url, 'maxTimeout': self.max_timeout}
-            session_cookies = {k: v for k, v in (cookies or {}).items() if not _is_cloudflare_cookie(k)}
-            if session_cookies:
-                # the page has to be solved as the signed in user, or kinozal
-                # hands the browser its login form instead. A caller's own
-                # cloudflare cookies are left out: they are what failed.
-                payload['cookies'] = [{'name': k, 'value': v, 'domain': host} for k, v in session_cookies.items()]
             try:
                 reply = requests.post(self.solver_url, json=payload, timeout=self.max_timeout / 1000.0 + 30)
-                reply.raise_for_status()
-                data = reply.json()
-            except (requests.exceptions.RequestException, ValueError) as e:
+            except requests.exceptions.RequestException as e:
+                self._failed_at[host] = time.time()
                 log.error('FlareSolverr is unreachable', solver_url=self.solver_url, error=str(e))
                 raise CloudflareSolverError(u"FlareSolverr at {0} is unreachable: {1}".format(self.solver_url, e))
+            try:
+                # a failed solve comes back as a 500 that still carries a JSON
+                # body saying why, so read it before looking at the status
+                data = reply.json()
+            except ValueError:
+                self._failed_at[host] = time.time()
+                log.error('FlareSolverr sent a non-JSON reply', status=reply.status_code)
+                raise CloudflareSolverError(u"FlareSolverr answered HTTP {0} without a JSON body".format(
+                    reply.status_code))
             if data.get('status') != 'ok':
+                self._failed_at[host] = time.time()
                 log.error('FlareSolverr could not solve the challenge', url=url, message=data.get('message'))
                 raise CloudflareSolverError(u"FlareSolverr could not solve {0}: {1}".format(url, data.get('message')))
+            self._failed_at.pop(host, None)
             solution = data.get('solution') or {}
             self._clearance[host] = {
                 'cookies': {c['name']: c['value'] for c in solution.get('cookies', [])
