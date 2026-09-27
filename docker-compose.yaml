@@ -13,7 +13,10 @@ services:
     ports:
       - "6687:6687"
     volumes:
-      - ./data:/data
+      # the folder holding monitorrent.db on this host. Point it at an existing
+      # database with MONITORRENT_DATA_DIR=/path/to/folder (or in a .env file);
+      # it must also contain any downloader folder, e.g. /data/torrents
+      - ${MONITORRENT_DATA_DIR:-./data}:/data
     command: ["python", "server.py", "--db-path", "/data/monitorrent.db"]
     environment:
       - MONITORRENT_FLARESOLVERR_URL=http://flaresolverr:8191/v1
