@@ -10,6 +10,7 @@ from monitorrent.db import Base, DBSession
 from monitorrent.plugins import Topic
 from monitorrent.plugin_managers import register_plugin
 from monitorrent.utils.soup import get_soup
+from monitorrent.utils.cloudflare import get_solver_session, get_cookie, SolverRequest
 from monitorrent.plugins.trackers import TrackerPluginBase, WithCredentialsMixin, ExecuteWithHashChangeMixin, \
     LoginResult, TrackerSettings, update_headers_and_cookies_mixin
 
@@ -117,6 +118,27 @@ class RutrackerTracker(object):
     def can_parse_url(self, url):
         return self._regex.match(url) is not None
 
+    @staticmethod
+    def _request(method, url, solve_url=None, session=None, **kwargs):
+        """Send through the cloudflare solver when one is configured.
+
+        rutracker challenges plain clients on viewtopic.php, login.php and
+        dl.php. With no solver configured this is the plain requests call it
+        replaced.
+        """
+        solver = get_solver_session()
+        if solver is not None:
+            return solver.request(method, url, solve_url=solve_url, session=session, **kwargs)
+        sender = session if session is not None else requests
+        # the method-named call (requests.get, session.post) exactly as before,
+        # so behaviour - and anything patching those names - is unchanged
+        return getattr(sender, method.lower())(url, **kwargs)
+
+    @staticmethod
+    def _new_session():
+        solver = get_solver_session()
+        return solver.new_session() if solver is not None else Session()
+
     def parse_url(self, url):
         match = self._regex.match(url)
         if match is None:
@@ -126,10 +148,10 @@ class RutrackerTracker(object):
         # no <h1> and so is indistinguishable here from "topic not found".
         # get_cookies carries the login session too, and falls back to the
         # cloudflare cookies alone when there is no session yet
-        r = requests.get(url, allow_redirects=False,
-                         headers=self.headers or None,
-                         cookies=self.get_cookies() or self.cookies or None,
-                         **self.tracker_settings.get_requests_kwargs())
+        r = self._request('GET', url, allow_redirects=False,
+                          headers=self.headers or None,
+                          cookies=self.get_cookies() or self.cookies or None,
+                          **self.tracker_settings.get_requests_kwargs())
 
         soup = get_soup(r.text)
         if soup.h1 is None:
@@ -144,20 +166,26 @@ class RutrackerTracker(object):
     def login(self, username, password, headers=None, cookies=None):
         self.headers = headers
         self.cookies = cookies
-        # probe login.php, not the index: the index is not behind the challenge,
-        # so probing it always reports "no protection" and never solves anything
-        headers, cookies = update_headers_and_cookies_mixin(self, self.login_url)
+        if get_solver_session() is None:
+            # probe login.php, not the index: the index is not behind the
+            # challenge, so probing it always reports "no protection" and never
+            # solves anything
+            headers, cookies = update_headers_and_cookies_mixin(self, self.login_url)
+        # with FlareSolverr configured the probe is skipped: its playwright
+        # solver cannot pass rutracker's challenge and only burns its timeout
+        # before the solver session, which can, gets a turn
 
         username_q = username.encode('windows-1251')
         password_q = password.encode('windows-1251')
         data = {"login_username": username_q, "login_password": password_q, 'login': u'%E2%F5%EE%E4'}
 
-        s = Session()
+        s = self._new_session()
         kwargs = {}
         if self.tracker_settings:
             kwargs = self.tracker_settings.get_requests_kwargs()
 
-        login_result = s.post(self.login_url, data, headers=headers, cookies=cookies, **kwargs)
+        login_result = self._request('POST', self.login_url, data=data, headers=headers, cookies=cookies,
+                                     session=s, **kwargs)
 
         # the challenge is served from login.php itself, so the url check below
         # would read it as a returned login form and blame the password
@@ -169,7 +197,7 @@ class RutrackerTracker(object):
             # it can contain request to enter capture, so we should handle it
             raise RutrackerLoginFailedException(1, "Invalid login or password")
         else:
-            bb_data = s.cookies.get('bb_session')
+            bb_data = get_cookie(s.cookies, 'bb_session')
             if not bb_data:
                 raise RutrackerLoginFailedException(2, "Failed to retrieve cookie")
 
@@ -182,8 +210,8 @@ class RutrackerTracker(object):
         cookies = self.get_cookies()
         if not cookies:
             return False
-        profile_page_result = requests.get(self.profile_page, cookies=cookies, headers=self.headers,
-                                           **self.tracker_settings.get_requests_kwargs())
+        profile_page_result = self._request('GET', self.profile_page, cookies=cookies, headers=self.headers,
+                                            **self.tracker_settings.get_requests_kwargs())
         # the challenge answers 403 without redirecting, so the url alone says
         # nothing about the session
         return profile_page_result.status_code == 200 and profile_page_result.url == self.profile_page
@@ -273,8 +301,10 @@ class RutrackerPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerP
             if not username or not password:
                 return LoginResult.CredentialsNotSpecified
             # cf_clearance is refused with any other User-Agent, so it is the
-            # pair or nothing
-            if cookies and 'cf_clearance' in cookies and not (headers or {}).get('User-Agent'):
+            # pair or nothing - unless FlareSolverr supplies both, in which case
+            # a pasted cookie is irrelevant and must not block the login
+            if get_solver_session() is None and cookies and 'cf_clearance' in cookies \
+                    and not (headers or {}).get('User-Agent'):
                 return LoginResult.CredentialsNotSpecified
         try:
             self.tracker.login(username, password, headers, cookies)
@@ -337,7 +367,14 @@ class RutrackerPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerP
         headers = dict(self.tracker.headers or {})
         headers.update({'referer': topic.url, 'host': "rutracker.org"})
         cookies = self.tracker.get_cookies()
-        request = requests.Request('POST', self.tracker.get_download_url(topic.url), headers=headers, cookies=cookies)
+        url = self.tracker.get_download_url(topic.url)
+        solver = get_solver_session()
+        if solver is not None:
+            # download() cannot pass the challenge with a plain PreparedRequest,
+            # and the solver's browser is shown the topic page, not dl.php
+            return SolverRequest(solver, 'POST', url, headers=headers, cookies=cookies or None,
+                                 solve_url=topic.url)
+        request = requests.Request('POST', url, headers=headers, cookies=cookies)
         return request.prepare()
 
 

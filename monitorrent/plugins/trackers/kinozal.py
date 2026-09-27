@@ -188,7 +188,9 @@ class KinozalTracker(object):
         if solver is not None:
             return solver.request(method, url, solve_url=solve_url, session=session, **kwargs)
         sender = session if session is not None else requests
-        return sender.request(method, url, **kwargs)
+        # the method-named call (requests.get, session.post) exactly as before,
+        # so behaviour - and anything patching those names - is unchanged
+        return getattr(sender, method.lower())(url, **kwargs)
 
     @staticmethod
     def _new_session():

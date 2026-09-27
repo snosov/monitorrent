@@ -67,6 +67,10 @@ class CloudflareSolverError(Exception):
     pass
 
 
+def _is_cloudflare_cookie(name):
+    return name.startswith(('cf_', '__cf'))
+
+
 def curl_timeout_options(timeout):
     """python-requests timeout semantics, expressed as curl options.
 
@@ -117,10 +121,12 @@ class CloudflareSolverSession(object):
         host = urlparse(url).hostname
         with self._lock:
             payload = {'cmd': 'request.get', 'url': url, 'maxTimeout': self.max_timeout}
-            if cookies:
+            session_cookies = {k: v for k, v in (cookies or {}).items() if not _is_cloudflare_cookie(k)}
+            if session_cookies:
                 # the page has to be solved as the signed in user, or kinozal
-                # hands the browser its login form instead
-                payload['cookies'] = [{'name': k, 'value': v, 'domain': host} for k, v in cookies.items()]
+                # hands the browser its login form instead. A caller's own
+                # cloudflare cookies are left out: they are what failed.
+                payload['cookies'] = [{'name': k, 'value': v, 'domain': host} for k, v in session_cookies.items()]
             try:
                 reply = requests.post(self.solver_url, json=payload, timeout=self.max_timeout / 1000.0 + 30)
                 reply.raise_for_status()
@@ -134,15 +140,17 @@ class CloudflareSolverSession(object):
             solution = data.get('solution') or {}
             self._clearance[host] = {
                 'cookies': {c['name']: c['value'] for c in solution.get('cookies', [])
-                            if c['name'].startswith(('cf_', '__cf'))},
+                            if _is_cloudflare_cookie(c['name'])},
                 'user_agent': solution.get('userAgent'),
             }
             log.info('Solved cloudflare challenge', host=host)
 
     def _send(self, method, url, host, cookies, headers, session, **kwargs):
         clearance = self._clearance.get(host, {})
-        all_cookies = dict(clearance.get('cookies', {}))
-        all_cookies.update(cookies or {})
+        # the solver's clearance wins over one the caller brings along - e.g.
+        # a cf_clearance pasted into rutracker's settings, long since expired
+        all_cookies = dict(cookies or {})
+        all_cookies.update(clearance.get('cookies', {}))
         all_headers = dict(headers or {})
         if clearance.get('user_agent'):
             # cf_clearance is bound to the agent it was issued for
