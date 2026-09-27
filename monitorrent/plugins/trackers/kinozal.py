@@ -12,6 +12,8 @@ from monitorrent.db import Base, DBSession, UTCDateTime
 from monitorrent.plugins import Topic
 from monitorrent.plugin_managers import register_plugin
 from monitorrent.utils.soup import get_soup
+from monitorrent.utils.cloudflare import (get_solver_session, get_cookie, SolverRequest,
+                                          CloudflareSolverError, HTTP_ERRORS)
 from monitorrent.plugins.trackers import TrackerPluginBase, WithCredentialsMixin, ExecuteWithHashChangeMixin, LoginResult
 
 PLUGIN_NAME = 'kinozal.tv'
@@ -174,6 +176,32 @@ class KinozalTracker(object):
         return "https://{}/inbox.php".format(self.domain)
 
     @staticmethod
+    def _request(method, url, solve_url=None, session=None, **kwargs):
+        """Send through the cloudflare solver when one is configured.
+
+        kinozal answers plain clients with a challenge on details.php,
+        takelogin.php and download.php, so every page request goes here. With
+        no solver configured this is exactly the plain requests call it
+        replaced.
+        """
+        solver = get_solver_session()
+        if solver is not None:
+            return solver.request(method, url, solve_url=solve_url, session=session, **kwargs)
+        sender = session if session is not None else requests
+        return sender.request(method, url, **kwargs)
+
+    @staticmethod
+    def _new_session():
+        solver = get_solver_session()
+        return solver.new_session() if solver is not None else Session()
+
+    def get_details_url(self, url):
+        torrent_id = self.get_id(url)
+        if torrent_id is None:
+            return None
+        return "https://{}/details.php?id={}".format(self.domain, torrent_id)
+
+    @staticmethod
     def _apply_encoding(response):
         """kinozal serves windows-1251 and does not always declare it.
 
@@ -208,10 +236,10 @@ class KinozalTracker(object):
         # the mirrors bounce anonymous requests to /login.php, so the session
         # cookies have to travel with this request, not just with the download
         try:
-            r = requests.get(real_url, allow_redirects=False, cookies=self.get_cookies() or None,
-                             **self.tracker_settings.get_requests_kwargs())
+            r = self._request('GET', real_url, allow_redirects=False, cookies=self.get_cookies() or None,
+                              **self.tracker_settings.get_requests_kwargs())
             r.raise_for_status()
-        except requests.exceptions.RequestException:
+        except HTTP_ERRORS + (CloudflareSolverError,):
             return None
 
         self._apply_encoding(r)
@@ -223,19 +251,20 @@ class KinozalTracker(object):
         return {'original_name': title}
 
     def login(self, username, password):
-        s = Session()
+        s = self._new_session()
         data = {"username": username, "password": password, 'returnto': ''}
-        
+
         try:
-            login_result = s.post(self.login_url, data, **self.tracker_settings.get_requests_kwargs())
-        except requests.exceptions.RequestException:
+            login_result = self._request('POST', self.login_url, data=data, session=s,
+                                         **self.tracker_settings.get_requests_kwargs())
+        except HTTP_ERRORS + (CloudflareSolverError,):
             raise KinozalLoginFailedException(3, "Connection failed")
 
         if login_result.url.startswith(self.login_url):
             raise KinozalLoginFailedException(1, "Invalid login or password")
         else:
-            c_pass = s.cookies.get('pass')
-            c_uid = s.cookies.get('uid')
+            c_pass = get_cookie(s.cookies, 'pass')
+            c_uid = get_cookie(s.cookies, 'uid')
             if not is_valid_cookie(c_pass) or not is_valid_cookie(c_uid):
                 raise KinozalLoginFailedException(2, "Failed to retrieve cookie")
 
@@ -248,9 +277,9 @@ class KinozalTracker(object):
             return False
 
         try:
-            profile_page_result = requests.get(self.profile_page, cookies=cookies,
-                                               **self.tracker_settings.get_requests_kwargs())
-        except requests.exceptions.RequestException:
+            profile_page_result = self._request('GET', self.profile_page, cookies=cookies,
+                                                **self.tracker_settings.get_requests_kwargs())
+        except HTTP_ERRORS + (CloudflareSolverError,):
             return False
 
         # the url alone is not proof of a session: a signed out request can be
@@ -279,10 +308,10 @@ class KinozalTracker(object):
         real_url = "https://{}/details.php?id={}".format(self.domain, torrent_id)
         
         try:
-            response = requests.get(real_url, cookies=self.get_cookies() or None,
-                                    **self.tracker_settings.get_requests_kwargs())
+            response = self._request('GET', real_url, cookies=self.get_cookies() or None,
+                                     **self.tracker_settings.get_requests_kwargs())
             response.raise_for_status()
-        except requests.exceptions.RequestException:
+        except HTTP_ERRORS + (CloudflareSolverError,):
             return None
 
         self._apply_encoding(response)
@@ -434,7 +463,15 @@ class KinozalPlugin(WithCredentialsMixin, ExecuteWithHashChangeMixin, TrackerPlu
         self._setup_tracker()
         headers = {'referer': topic.url}
         cookies = self.tracker.get_cookies()
-        request = requests.Request('GET', self.tracker.get_download_url(topic.url), headers=headers, cookies=cookies)
+        url = self.tracker.get_download_url(topic.url)
+        solver = get_solver_session()
+        if solver is not None:
+            # download() cannot pass the challenge with a plain PreparedRequest.
+            # The solver's browser is shown the topic page: given the download
+            # link it would save a file instead of rendering the challenge.
+            return SolverRequest(solver, 'GET', url, headers=headers, cookies=cookies or None,
+                                 solve_url=self.tracker.get_details_url(topic.url))
+        request = requests.Request('GET', url, headers=headers, cookies=cookies)
         return request.prepare()
 
 

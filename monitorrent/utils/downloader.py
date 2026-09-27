@@ -3,7 +3,11 @@ import requests
 
 
 def download(request, **kwargs):
-    if isinstance(request, requests.PreparedRequest):
+    if hasattr(request, 'fetch'):
+        # a tracker behind a cloudflare challenge supplies its own fetcher,
+        # because plain requests is refused however the request is built
+        response = request.fetch(**kwargs)
+    elif isinstance(request, requests.PreparedRequest):
         response = requests.session().send(request, **kwargs)
     else:
         response = requests.get(request, **kwargs)

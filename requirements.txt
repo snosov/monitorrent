@@ -19,6 +19,8 @@ semver==2.8.1
 playwright==1.31.1
 brotli==1.0.9
 structlog
+# impersonates Chrome's TLS fingerprint - cloudflare refuses a cf_clearance from python-requests
+curl_cffi==0.13.0
 
 #python 2/3 compatibility and backports
 six==1.12.0

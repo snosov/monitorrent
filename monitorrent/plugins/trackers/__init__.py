@@ -25,6 +25,7 @@ from monitorrent.plugins.status import Status
 from monitorrent.plugins.clients import TopicSettings
 from monitorrent.utils.bittorrent_ex import Torrent, is_torrent_content
 from monitorrent.utils.downloader import download
+from monitorrent.utils.cloudflare import is_cloudflare_challenge  # noqa: F401 - re-exported
 from monitorrent.engine import Engine
 from future.utils import with_metaclass
 
@@ -433,23 +434,6 @@ def extract_cloudflare_credentials_and_headers(url: str, headers: dict, cookies:
         return headers, cookies
     except CloudflareException:
         return asyncio.run(solve_challenge(url, settings))
-
-
-def is_cloudflare_challenge(resp):
-    """Whether this response is an interstitial challenge rather than the page.
-
-    The old check was `'Cloudflare' in resp.text`, which the current managed
-    challenge does not satisfy: it spells the name in lowercase only, so every
-    challenge looked like a clean page and the solver was never invoked.
-    Match on the response metadata first and fall back to case-insensitive
-    body markers.
-    """
-    if resp.headers.get('cf-mitigated') == 'challenge':
-        return True
-    if resp.status_code not in (403, 503):
-        return False
-    body = (resp.text or '').lower()
-    return any(marker in body for marker in ('just a moment', 'challenge-platform', '__cf_chl', 'cloudflare'))
 
 
 async def solve_challenge(url, settings: CloudflareChallengeSolverSettings):

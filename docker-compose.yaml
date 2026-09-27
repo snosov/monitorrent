@@ -1,0 +1,28 @@
+# monitorrent with a FlareSolverr sidecar.
+#
+# kinozal answers plain HTTP clients with a Cloudflare challenge on the pages
+# monitorrent needs. FlareSolverr passes it with a real browser and hands back
+# the clearance; monitorrent reuses it through curl_cffi. Without
+# MONITORRENT_FLARESOLVERR_URL set, monitorrent behaves as before.
+services:
+  monitorrent:
+    build: .
+    image: monitorrent
+    container_name: monitorrent
+    restart: unless-stopped
+    ports:
+      - "6687:6687"
+    volumes:
+      - ./data:/data
+    command: ["python", "server.py", "--db-path", "/data/monitorrent.db"]
+    environment:
+      - MONITORRENT_FLARESOLVERR_URL=http://flaresolverr:8191/v1
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
