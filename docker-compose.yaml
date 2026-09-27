@@ -22,6 +22,7 @@ services:
       - MONITORRENT_FLARESOLVERR_URL=http://flaresolverr:8191/v1
     depends_on:
       - flaresolverr
+      - deluge
 
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -29,3 +30,24 @@ services:
     restart: unless-stopped
     environment:
       - LOG_LEVEL=info
+
+  # torrent client. In monitorrent: Settings -> Clients -> Deluge, host
+  # "deluge", port 58846, user "localclient" with the password from
+  # <deluge config>/auth. Deluge's core.conf needs "allow_remote": true, or it
+  # listens on 127.0.0.1 only and monitorrent - another container - is refused.
+  # 58846 is not published: monitorrent reaches it over the compose network.
+  deluge:
+    image: lscr.io/linuxserver/deluge:latest
+    container_name: deluge
+    restart: unless-stopped
+    ports:
+      - "8112:8112"        # web UI
+      - "6881:6881"
+      - "6881:6881/udp"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${DELUGE_CONFIG_DIR:-./deluge/config}:/config
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads

@@ -1,6 +1,7 @@
 # Deploying monitorrent (fixes branch)
 
-Runs monitorrent with a FlareSolverr sidecar. kinozal and rutracker put a
+Runs monitorrent with a FlareSolverr sidecar and Deluge as the torrent
+client. kinozal and rutracker put a
 Cloudflare challenge in front of plain HTTP clients; FlareSolverr passes it
 and monitorrent reuses the clearance. Without the sidecar those two trackers
 cannot parse, log in or download.
@@ -47,17 +48,26 @@ Check the machine with `uname -m`.
 
 ```bash
 docker compose up -d
-docker compose ps        # both Up, monitorrent (healthy)
+docker compose ps        # all three Up, monitorrent (healthy)
 ```
 
-`flaresolverr` is pulled automatically and is deliberately not published on
-the host: it is an open proxy.
+This starts `monitorrent`, `flaresolverr` and `deluge`. `flaresolverr` is
+deliberately not published on the host: it is an open proxy. Deluge's web UI
+is on port 8112; its config and downloads default to `./deluge/config` and
+`./downloads` (override with `DELUGE_CONFIG_DIR`, `DOWNLOADS_DIR`, and
+`PUID`/`PGID`/`TZ` in `.env`).
 
 ## 5. After first start - in the UI
 
 - **Settings -> Trackers -> kinozal -> Domain: `kinozal.guru`.** The migration
   sets existing credentials to `kinozal.tv`, which no longer resolves, so
   kinozal fails until this is changed.
+- **Settings -> Clients -> Deluge:** host `deluge`, port `58846`, user
+  `localclient` with the password from `<deluge config>/auth`, then make it
+  the default. Deluge's `core.conf` must have `"allow_remote": true`: by
+  default it listens on 127.0.0.1 only and refuses monitorrent, which runs in
+  another container. Stop the container before editing `core.conf`, Deluge
+  rewrites it on exit.
 - **Settings -> Clients:** make sure the default client is one that is
   actually configured. If it is the downloader, its folder has to be inside
   the mounted data folder, e.g. `/data/torrents` - anything else is lost when
